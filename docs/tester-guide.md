@@ -76,10 +76,15 @@ it up or down. When two mods change the same file, the higher one wins.
   change it cannot express, or a data write into bytes the built game reads as constants (a jump table) or into the
   dynamic linker's tables. A patch over one of the port's own patches turns that built-in patch off while the mod is on
   (the Mods tab names it).
-- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) cannot load that code. Such a
-  mod stays off as a whole, its RomFS files included, unless "Use mods without their code" on the Mods tab is on
-  (`mods_without_code = 1` under `[mods]` in `totk.ini`): then its RomFS files, cheats and ExeFS patches load without
-  the code module. Its files may expect that code; switch the mod off if the game misbehaves.
+- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) cannot load that code, with
+  one exception below. Such a mod stays off as a whole, its RomFS files included, unless "Use mods without their code"
+  on the Mods tab is on (`mods_without_code = 1` under `[mods]` in `totk.ini`): then its RomFS files, cheats and ExeFS
+  patches load without the code module. Its files may expect that code; switch the mod off if the game misbehaves.
+- The exception: the code module of The Second Quest (MSFix, its `exefs/subsdk9` in the 1.2.1 and the 1.4.3
+  packages) runs as the port's own code. Its hooks are built into the game like ExeFS patches (the rebuild at the next
+  start) and switch with the mod. The Mods tab says `Its code module subsdk9 runs as the port's own code`, and the log
+  has `mods: <name>: its code module subsdk9 runs ...` at the start and `hooks: ... runs for the first time` when the
+  game first reaches each hooked function. Only one `exefs/subsdk9` runs, the top mod's, as on the Switch.
 - Cheats: an Atmosphère cheat file goes into a mod's `cheats` folder (`mods/<name>/cheats/<build id>.txt`, the
   build id `277178B7DBA1B6D4` for 1.4.3, `9B4E43650501A4D4` for 1.2.1). The Cheats tab of the menu switches them.
   Cheats that write memory work at the next start; for cheats that change the game's code the game opens the setup's
