@@ -127,10 +127,16 @@ void rec_drain(void) {
 void rec_begin(VkCommandBuffer cb) {
     static int mode = -1;
     if (mode < 0) {
-        // Default on for every GPU. AMD drivers once lost the device with the recorder (issues #5 and #40); after
-        // vk_mem_note_recording kept objects alive until their submission completed and the recorder began ending
-        // its own parts (rec_end_cb), RDNA 1 and 2 cards ran with it on and off without a loss or a white scene.
-        mode = rt_knob("VK_RECORDER", "1");
+        // Default off on AMD GPUs, on elsewhere. AMD drivers lost the device with the recorder at boot or at menu opens
+        // (issues #5 and #40). Keeping objects alive until their submission completed (vk_mem_note_recording) and
+        // letting the recorder end its own parts (rec_end_cb) looked like the cure, but with the recorder back on for
+        // AMD in 0.2.8 an RX 6600, 6650 XT, 6900 XT and 7800 XT stayed at a black screen before the logo (issue #277)
+        // and an RX 5600 XT lost the device during and after cutscenes (issue #369); vk_recorder = 0 ended both.
+        // TOTK_VK_RECORDER=1 turns it on.
+        const char *set = cfg_get("TOTK_VK_RECORDER");
+        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
+        if (!mode && vk_caps.amd && !(set && *set))
+            rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
