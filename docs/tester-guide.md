@@ -68,14 +68,18 @@ it up or down. When two mods change the same file, the higher one wins.
   much memory each file needs, is rebuilt at every start with mods enabled: the tables the mods ship are merged and
   the entries of files a mod made larger or added are raised. The log line `RomFS: resource size table: ...` says
   how many. A mod's table for another game version still counts for that mod's own files.
-- Mods that patch the game code (`exefs/*.ips`, `exefs/*.pchtxt`, or `atmosphere/exefs_patches/<name>/*.ips`) work
-  when the patches are for this game version and change only code: the game rebuilds itself with them at the next
-  start (the setup's rebuild window, a few minutes) and switches them with the mod. Patches for another version are
-  counted and left out; a file that writes the game's data, or that the port cannot express, keeps the whole mod off
-  and the Mods tab says why. A patch over one of the port's own patches turns that built-in patch off while the mod
-  is on (the Mods tab names it).
-- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) never load, their RomFS files
-  included.
+- Mods that patch the game (`exefs/*.ips`, `exefs/*.pchtxt`, or `atmosphere/exefs_patches/<name>/*.ips`) work when
+  the patches are for this game version: the game rebuilds itself with them at the next start (the setup's rebuild
+  window, a few minutes) and switches them with the mod. Writes into the game's code become patches of the built game;
+  writes into its data are stored into the game before it starts, as emulators apply them. Patches for another version
+  are counted and left out. A file the port cannot apply keeps the whole mod off and the Mods tab says why: a code
+  change it cannot express, or a data write into bytes the built game reads as constants (a jump table) or into the
+  dynamic linker's tables. A patch over one of the port's own patches turns that built-in patch off while the mod is on
+  (the Mods tab names it).
+- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) cannot load that code. Such a
+  mod stays off as a whole, its RomFS files included, unless "Use mods without their code" on the Mods tab is on
+  (`mods_without_code = 1` under `[mods]` in `totk.ini`): then its RomFS files, cheats and ExeFS patches load without
+  the code module. Its files may expect that code; switch the mod off if the game misbehaves.
 - Cheats: an Atmosphère cheat file goes into a mod's `cheats` folder (`mods/<name>/cheats/<build id>.txt`, the
   build id `277178B7DBA1B6D4` for 1.4.3, `9B4E43650501A4D4` for 1.2.1). The Cheats tab of the menu switches them.
   Cheats that write memory work at the next start; for cheats that change the game's code the game opens the setup's
