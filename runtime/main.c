@@ -16,8 +16,9 @@
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
-// rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (a vectored exception handler that
-// names the lifted function, the guest registers and the guest frame-pointer chain).
+// rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (platform.h plat_crash_hook: names
+// the faulting module, the lifted function, the guest registers and the guest frame-pointer chain, the GPU's
+// breadcrumbs and the commit charge).
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,24 +213,44 @@ static uint64_t lifted_function(uintptr_t rip) {
 
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 
+// The GPU back end's lines for a crash report; the back end (vk_crumbs.c) replaces this.
+__attribute__((weak)) void gfx_crash_log(void) {}
+
 static void crash_handler(const PlatCrash *x) {
-    static volatile int32_t busy;
-    if (plat_xchg32(&busy, 1)) plat_exit(71);
+    // One thread reports. A crash inside the report ends the process at once; another thread that crashes meanwhile
+    // (after a lost device several threads can fail inside the driver) waits up to 5 s for the report to end it,
+    // where it used to end the process in the middle of the first thread's report.
+    static volatile int32_t owner;
+    int32_t me = (int32_t)plat_thread_id(), prev = plat_cas32(&owner, me, 0);
+    if (prev == me) plat_exit_hard(71);
+    if (prev) {
+        for (int i = 0; i < 50; i++) plat_sleep_ms(100);
+        plat_exit_hard(71);
+    }
     char d[160];
-    uintptr_t rip = x->rip;
-    rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip, (unsigned long long)x->offset);
+    uintptr_t rip = x->rip, exe = plat_exe_base();
+    if (!x->module)
+        rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip,
+                (unsigned long long)x->offset);
+    else if (*x->module)   // another module's code: a driver, the C runtime, ntdll
+        rt_logf("FATAL: %s (%#x) at host %p (%s+%#llx)", x->what, x->code, (void *)rip, x->module,
+                (unsigned long long)x->offset);
+    else
+        rt_logf("FATAL: %s (%#x) at host %p (outside every module)", x->what, x->code, (void *)rip);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
-    uint64_t f = lifted_function(rip);
+    uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
+    for (int i = 0; i < x->nframes; i++) {   // where this executable called abort, the C runtime or the crashed module
         uint64_t g = lifted_function(x->frames[i]);
-        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - (rip - x->offset)));
+        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
+    const char *tn = plat_thread_name();
+    rt_logf("  thread: %s\n", tn ? tn : "unnamed (the process's main thread or a library's)");
     Cpu *c = kern_cpu();
     if (c) {
         for (int i = 0; i < 31; i++)
@@ -246,8 +267,13 @@ static void crash_handler(const PlatCrash *x) {
     } else {
         rt_logf("  not on a guest thread\n");
     }
+    gfx_crash_log();
+    // The commit charge: a driver that cannot allocate may fault instead of failing the call (rt_fatal logs the same)
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    rt_logf("  memory commit: this process %.0f MB, the system %.0f of %.0f MB\n", proc, used, limit);
     fflush(stderr);
-    plat_exit(71);
+    plat_exit_hard(71);   // the log file got each line when it was written (plat_append_write): none is lost
 }
 
 // ---- self-test: layout, dispatch table, host-function registry, without game files

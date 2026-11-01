@@ -88,9 +88,13 @@ static void top_up(const VkCtx *c, uint32_t type) {
     drop_anchor(c, type);
     H.anchor[type] = a;
     static volatile int32_t logged;
-    if (plat_inc32(&logged) <= 32)
+    if (plat_inc32(&logged) <= 32) {
+        char s[1024];   // the memory these blocks come from: on an integrated GPU, the system's commit
+        vk_mem_status(s, sizeof s);
         rt_log("vk: headroom: a %.0f MiB block of memory type %u allocated ahead (%lld so far; %lld allocations of 32 MiB "
-               "or more on other threads)", (double)block / 1048576.0, type, (long long)H.made, (long long)H.other);
+               "or more on other threads); %s", (double)block / 1048576.0, type, (long long)H.made, (long long)H.other,
+               s);
+    }
 }
 
 static void headroom_main(void *arg) {

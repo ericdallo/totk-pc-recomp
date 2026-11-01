@@ -498,8 +498,37 @@ static int dead_pending(void);
 
 static void vram_log(uint64_t frame);
 
+// The commit charge and, per heap, the process's use against its budget (VK_EXT_memory_budget through VMA) and VMA's
+// own blocks. An allocation fails once the system's commit reaches its limit, whatever a heap's budget still shows, and
+// on an integrated GPU every heap is system memory: AMD APU runs ended (a fault in the driver, a lost device, a failed
+// allocation with the commit full) as their device-local blocks grew, and a log with these lines shows whether memory
+// ran out.
+size_t vk_mem_status(char *out, size_t cap) {
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    int k = snprintf(out, cap, "commit: this process %.0f MB, the system %.0f of %.0f MB", proc, used, limit);
+    size_t n = k > 0 ? (size_t)k : 0;
+    VkCtx *c = vk_ctx();
+    if (c && c->vma) {
+        VmaBudget b[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(c->vma, b);
+        for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS && n < cap; h++) {
+            k = snprintf(out + n, cap - n, "; heap %u%s %.0f of %.0f MiB (VMA blocks %.0f MiB)", h,
+                         c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " device-local" : "",
+                         b[h].usage / 1048576.0, b[h].budget / 1048576.0, b[h].statistics.blockBytes / 1048576.0);
+            n += k > 0 ? (size_t)k : 0;
+        }
+    }
+    return n < cap ? n : cap ? cap - 1 : 0;
+}
+
 void vk_mem_census(uint64_t frame) {
     static uint64_t window_start;
+    if (frame == 600 || (frame && frame % 1800 == 0)) {   // every 30 s at 60 fps: the trend before a crash
+        char s[1024];
+        vk_mem_status(s, sizeof s);
+        rt_log("mem: frame %llu: %s", (unsigned long long)frame, s);
+    }
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)

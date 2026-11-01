@@ -211,7 +211,10 @@ int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr ge
 void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
-                                                  // with TOTK_TRACE=perf, every 1800 frames
+                                                  // with TOTK_TRACE=perf, every 1800 frames; the memory status line at
+                                                  // frame 600 and every 1800 frames
+// The commit charge and each heap's use, budget and VMA blocks as one line of text for the log; its length.
+size_t vk_mem_status(char *out, size_t cap);
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
 // 0: this allocator's own allocations against the heap sizes. 0 when unknown.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);

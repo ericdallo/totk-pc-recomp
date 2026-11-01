@@ -95,14 +95,19 @@ static void alt_stack(void) {
     sigaltstack(&ss, NULL);
 }
 
+static __thread char thread_name[16];   // a copy of PlatThread.name for plat_thread_name
+
 static void *thread_main(void *p) {
     PlatThread *t = p;
     alt_stack();
     __atomic_store_n(&t->tid, (int32_t)syscall(SYS_gettid), __ATOMIC_RELEASE);
     if (t->name[0]) pthread_setname_np(pthread_self(), t->name);
+    memcpy(thread_name, t->name, sizeof thread_name);
     t->fn(t->arg);
     return NULL;
 }
+
+const char *plat_thread_name(void) { return thread_name[0] ? thread_name : NULL; }
 
 PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     return plat_thread_new_ex(fn, arg, name, 0);
@@ -1263,6 +1268,8 @@ void plat_exit(int code) {
     fflush(stderr);
     _exit(code);
 }
+
+void plat_exit_hard(int code) { plat_exit(code); }   // _exit runs no library unload code either
 
 int plat_setenv(const char *name, const char *value) {
     return (value ? setenv(name, value, 1) : unsetenv(name)) == 0;

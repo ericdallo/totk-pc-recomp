@@ -65,3 +65,7 @@ void vk_crumbs_report(void) {
     describe(words[1], finished, sizeof finished);
     rt_log("vk: GPU breadcrumbs: the GPU last reached %s; everything before %s had finished", reached, finished);
 }
+
+// A crash report (main.c crash_handler) shows where the GPU stood too: a GPU that had stopped mid-submission points at
+// a hang, one that finished everything at a CPU-side crash. Two reads of mapped memory, no driver call.
+void gfx_crash_log(void) { vk_crumbs_report(); }
