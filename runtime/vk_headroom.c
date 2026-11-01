@@ -12,7 +12,8 @@
 // a block per memory type is held back.
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
-// is allocated.
+// is allocated. On an integrated GPU the same holds while the system runs short of memory (vk_mem_system_low): there
+// the blocks are system memory.
 // TOTK_VRAM_HEADROOM=0 turns it off.
 
 #include "cfg.h"
@@ -58,11 +59,12 @@ static VkDeviceSize block_size(const VkCtx *c, uint32_t type) {
     return heap <= HR_SMALL_HEAP ? heap / 8 : 256ull << 20;   // VMA's default preferredLargeHeapBlockSize
 }
 
+// On an integrated GPU the system must have memory to spare as well: its heaps are system memory (vk_mem_system_low).
 static int room(const VkCtx *c, uint32_t type, VkDeviceSize block) {
     VmaBudget b[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(c->vma, b);
     const VmaBudget *h = &b[c->mem_props.memoryTypes[type].heapIndex];
-    return h->budget && h->usage + 2 * block <= h->budget / 100 * 85;
+    return h->budget && h->usage + 2 * block <= h->budget / 100 * 85 && !vk_mem_system_low();
 }
 
 static void drop_anchor(const VkCtx *c, uint32_t type) {

@@ -18,7 +18,8 @@
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
-# The Advanced tab of the settings menu (F1) shows all of them except zstd_native and zstd_check.
+# The Advanced tab of the settings menu (F1) shows all of them except zstd_native, zstd_check, mem_reserve and
+# vk_recorder.
 
 # Scheduling.
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
@@ -57,6 +58,10 @@
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
 # every copy; slow).
 # memory = auto
+# On an integrated GPU, the system memory in MiB to keep free (0 = off). Its video memory is system memory: below this,
+# textures the game released are dropped (they come back from storage when used again) and no spare video memory block
+# is allocated ahead. On Windows an allocation fails once the commit charge reaches its limit (RAM plus page file).
+# mem_reserve = 2048
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
 # Host zstd decoder in place of the game's (0 = the game's), and a check that decodes every call both ways and logs

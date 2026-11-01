@@ -1483,6 +1483,11 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
         *proc_mb = (double)(pmc.PrivateUsage >> 20);
 }
 
+double plat_mem_room_mb(void) {
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    return GlobalMemoryStatusEx(&ms) ? (double)(ms.ullAvailPageFile >> 20) : -1;   // the commit limit minus the charge
+}
+
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {
     PROCESS_MEMORY_COUNTERS_EX pm = {.cb = sizeof pm};
     *resident = *private_bytes = 0;

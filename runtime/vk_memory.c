@@ -498,6 +498,36 @@ static int dead_pending(void);
 
 static void vram_log(uint64_t frame);
 
+static int mem_uma = -1;   // vk_mem_class_log: 1 when the device's memory is system memory (uma), 0 discrete
+
+// System memory pressure on a uma device (TOTK_MEM_RESERVE, MiB the system keeps free; 0 turns it off). Its heaps,
+// device-local ones included, are system memory, so the device-local budget (sweep_pressure's 90%, the headroom's 85%)
+// misses the system running out: the 780M of issue #362 ran out of commit while its process held 8.7 GB, and AMD APU
+// runs ended inside the driver as their device-local blocks grew (vk_mem_status). Below the reserve released textures
+// are dropped (vk_texture.c sweep_pressure) and no spare block is kept (vk_headroom.c room). The answer is kept for
+// 250 ms: the texture sweep asks every 8 submits. Changes of state are logged, the first 16.
+int vk_mem_system_low(void) {
+    static int reserve = -1;
+    static volatile int64_t next_ns;
+    static volatile int32_t low, changes;
+    if (__atomic_load_n(&mem_uma, __ATOMIC_ACQUIRE) != 1) return 0;
+    if (reserve < 0) reserve = cfg_int("TOTK_MEM_RESERVE");   // the same value from any thread
+    if (reserve <= 0) return 0;
+    int64_t now = (int64_t)plat_now_ns();
+    if (now < __atomic_load_n(&next_ns, __ATOMIC_ACQUIRE)) return __atomic_load_n(&low, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&next_ns, now + 250000000, __ATOMIC_RELEASE);
+    double room = plat_mem_room_mb();
+    int l = room >= 0 && room < reserve;
+    if (plat_xchg32(&low, l) != l && plat_inc32(&changes) <= 16) {
+        char s[1024];
+        vk_mem_status(s, sizeof s);
+        rt_log(l ? "mem: system memory low: %.0f MB left, under the %d MiB reserve (TOTK_MEM_RESERVE): released "
+                   "textures are dropped and no headroom block is kept; %s"
+                 : "mem: system memory back above the reserve: %.0f MB left, reserve %d MiB; %s", room, reserve, s);
+    }
+    return l;
+}
+
 // The commit charge and, per heap, the process's use against its budget (VK_EXT_memory_budget through VMA) and VMA's
 // own blocks. An allocation fails once the system's commit reaches its limit, whatever a heap's budget still shows, and
 // on an integrated GPU every heap is system memory: AMD APU runs ended (a fault in the driver, a lost device, a failed
@@ -1740,6 +1770,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     else if (host_heap < 0) cls = "uma", why = "every heap is device-local";
     else cls = "discrete", why = "device-local heap separate from host memory";
     int discrete = cls[0] == 'd';
+    __atomic_store_n(&mem_uma, !discrete, __ATOMIC_RELEASE);
     char line[2048];
     size_t k = (size_t)snprintf(line, sizeof line, "mem: class %s (%s; device type %d %s, %s)", cls, why, t, tn, p->deviceName);
     for (uint32_t h = 0; h < m->memoryHeapCount; h++)

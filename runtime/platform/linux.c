@@ -1595,6 +1595,22 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
     if (private_bytes) *proc_mb = (double)(private_bytes >> 20);
 }
 
+// CommitLimit binds only with vm.overcommit_memory = 2 (see above); otherwise allocations go on until RAM and swap are
+// gone and the OOM killer ends a process.
+double plat_mem_room_mb(void) {
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[128];
+    unsigned long long k, avail = 0, swap = 0;
+    int got = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "MemAvailable: %llu kB", &k) == 1) avail = k, got = 1;
+        else if (sscanf(line, "SwapFree: %llu kB", &k) == 1) swap = k;
+    }
+    fclose(f);
+    return got ? (double)((avail + swap) >> 10) : -1;
+}
+
 // ---- child processes
 
 struct PlatChild {

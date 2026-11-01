@@ -527,7 +527,9 @@ static void sweep_released(void) {
 // one decoded to RGBA8) while the heap spills into system memory. A few per submit, for the reason above. Only entries
 // that come back intact are dropped: mirrored ones the GPU never wrote, re-uploaded from their storage. A render target
 // lives only in its image; dropping it brought the texture back empty (black flashes in a Depths boss fight, ~170
-// "left uninitialised" aliases a minute).
+// "left uninitialised" aliases a minute). On an integrated GPU the same happens while the system runs short of memory
+// (vk_mem_system_low): there the device-local budget is a share of system memory that the rest of the process and
+// other programs use too, and a full system ended runs in the driver before the budget showed any pressure.
 #define PRESSURE_STEP 32
 static int vram_pressure = -1;
 static uint64_t n_pressure_drops;
@@ -542,7 +544,8 @@ static void sweep_pressure(void) {   // tex_lock held
     if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
     uint64_t used, budget;
     int exact;
-    if (!vk_mem_vram(&used, &budget, &exact) || used <= budget / 100 * (uint64_t)vram_pressure) return;
+    int over = vk_mem_vram(&used, &budget, &exact) && used > budget / 100 * (uint64_t)vram_pressure;
+    if (!over && !vk_mem_system_low()) return;
     int dropped = 0;
     for (Tex *e = rel_head, *next; e && dropped < PRESSURE_STEP; e = next) {
         next = e->rel_next;

@@ -218,6 +218,9 @@ size_t vk_mem_status(char *out, size_t cap);
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
 // 0: this allocator's own allocations against the heap sizes. 0 when unknown.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
+// 1 on a uma device (an integrated GPU: its memory is system memory) while the system has less memory left than
+// TOTK_MEM_RESERVE: caches that hold device memory let it go. 0 on a discrete GPU.
+int vk_mem_system_low(void);
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
 // block of each memory type in use ahead of the render thread.
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
