@@ -127,12 +127,12 @@ void rec_drain(void) {
 void rec_begin(VkCommandBuffer cb) {
     static int mode = -1;
     if (mode < 0) {
-        // Default off on AMD GPUs, on elsewhere. AMD drivers lost the device with the recorder at boot or at menu opens
-        // (issues #5 and #40). Keeping objects alive until their submission completed (vk_mem_note_recording) and
-        // letting the recorder end its own parts (rec_end_cb) looked like the cure, but with the recorder back on for
-        // AMD in 0.2.8 an RX 6600, 6650 XT, 6900 XT and 7800 XT stayed at a black screen before the logo (issue #277)
-        // and an RX 5600 XT lost the device during and after cutscenes (issue #369); vk_recorder = 0 ended both.
-        // TOTK_VK_RECORDER=1 turns it on.
+        // Default off on AMD GPUs. With the recorder those drivers lost the device or hung the GPU at startup on
+        // RDNA 2, 3 and 4, under AMD's Windows driver and under RADV (issues #5, #40, #277 and #283: a black screen,
+        // or VK_ERROR_DEVICE_LOST with a breadcrumb naming a part of a replay submission, and vk_recorder = 0 gets
+        // past it). Keeping objects until their submission completed and ending a part from the recorder
+        // (rec_end_cb) fixed the white scene on an RX 6700 XT, but not this: 0.2.8 turned the recorder on for every
+        // GPU and the AMD reports came back the same day. TOTK_VK_RECORDER=1 turns it on for an A/B run.
         const char *set = cfg_get("TOTK_VK_RECORDER");
         mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
         if (!mode && vk_caps.amd && !(set && *set))
@@ -168,11 +168,14 @@ void rec_end(void) {
 // recorded and the submitting thread ended broke when a submission was split (vk_sync.c vk_sync_split): the GPU hung
 // or the scene turned green, then white. The handoff in rec_drain orders the two threads, so Vulkan allows the old
 // split; the driver did not cope with it. TOTK_REC_END=0 brings the old split back.
+// The line is written only when a part was recorded by the recorder: with the recorder off (the default on AMD) the
+// switch changes nothing, and reports read an unconditional line as proof that the recorder was running (#315).
 typedef struct { int kind; uint64_t n; } A_EndCb;
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
-    static int mode = -1;
-    if (mode < 0) {
-        mode = rt_knob("REC_END", "1");
+    static int mode = -1, said;
+    if (mode < 0) mode = rt_knob("REC_END", "1");
+    if (rec_live && cb == rec_cb && !said) {
+        said = 1;
         rt_log("vk_rec: a part the recorder records is ended by %s (TOTK_REC_END=%d)",
                mode ? "the recorder" : "the submitting thread", mode);
     }
