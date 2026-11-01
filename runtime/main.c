@@ -215,6 +215,13 @@ static uint64_t lifted_function(uintptr_t rip) {
 
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 
+// An address ldr_describe names: inside a loaded module or at a registered host function.
+static int nameable(uint64_t a) {
+    for (int i = 0; ldr_module(i); i++)
+        if (a - ldr_module(i)->base < ldr_module(i)->size) return 1;
+    return hostfn_name(a) != NULL;
+}
+
 // The GPU back end's lines for a crash report; the back end (vk_crumbs.c) replaces this.
 __attribute__((weak)) void gfx_crash_log(void) {}
 
@@ -255,10 +262,16 @@ static void crash_handler(const PlatCrash *x) {
     rt_logf("  thread: %s\n", tn ? tn : "unnamed (the process's main thread or a library's)");
     Cpu *c = kern_cpu();
     if (c) {
+        // The lifted code keeps registers in C locals between calls, so these are their values at the last call,
+        // indirect branch or host call. pc is where the last indirect branch went (rt_dispatch): after a call through
+        // a PLT stub, the import that ran, which ldr_describe names by its symbol.
         for (int i = 0; i < 31; i++)
             rt_logf("  x%-2d %016llx%s", i, (unsigned long long)c->x[i], i % 4 == 3 ? "\n" : "");
-        rt_logf("  sp  %016llx\n  pc  %016llx  lr %s\n", (unsigned long long)c->sp, (unsigned long long)c->pc,
+        char p[160];
+        rt_logf("  sp  %016llx\n  pc  %s  lr %s\n", (unsigned long long)c->sp, ldr_describe(c->pc, p, sizeof p),
                 ldr_describe(c->x[30], d, sizeof d));
+        for (int i = 0; i < 30; i++)   // code and data addresses among them: callbacks, GOT slots, module data
+            if (nameable(c->x[i])) rt_logf("  x%-2d = %s\n", i, ldr_describe(c->x[i], d, sizeof d));
         uint64_t fp = c->x[29];
         for (int n = 0; n < 32 && fp && !(fp & 7) && readable(fp, 16); n++) {
             uint64_t next = LD64(fp), lr = LD64(fp + 8);
