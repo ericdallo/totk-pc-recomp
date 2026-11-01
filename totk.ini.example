@@ -19,8 +19,8 @@
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
-# The Advanced tab of the settings menu (F1) shows all of them except zstd_native, zstd_check, mem_reserve and
-# vk_recorder.
+# The Advanced tab of the settings menu (F1) shows all of them except free_cores, zstd_native, zstd_check, mem_reserve,
+# split_us, vk_recorder and wb_fence_limit.
 
 # Scheduling.
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
