@@ -66,8 +66,10 @@ it up or down. When two mods change the same file, the higher one wins.
   the Mods tab counts them. Look for the mod's release for your game version.
 - The resource size table (`System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs`), which tells the game how
   much memory each file needs, is rebuilt at every start with mods enabled: the tables the mods ship are merged and
-  the entries of files a mod made larger or added are raised. The log line `RomFS: resource size table: ...` says
-  how many. A mod's table for another game version still counts for that mod's own files.
+  the entries of files a mod made larger or added are raised, the files inside a mod's packs (`Pack/**/*.pack.zs`)
+  included. The log line `RomFS: resource size table: ...` says how many, and names the first files inside packs it
+  raised. A mod's table for another game version still counts for that mod's own files. Without this, a file that
+  outgrew its entry crashes the game when it loads, which can be long after the start, when the game first needs it.
 - Mods that patch the game (`exefs/*.ips`, `exefs/*.pchtxt`, or `atmosphere/exefs_patches/<name>/*.ips`) work when
   the patches are for this game version: the game rebuilds itself with them at the next start (the setup's rebuild
   window, a few minutes) and switches them with the mod. Writes into the game's code become patches of the built game;
