@@ -39,6 +39,10 @@ build\<ver>\totk.exe
 `TOTK_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
 do one run with it and one without (`set TOTK_VK_VALIDATION=`).
 
+If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
+`vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
+`set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
+
 The game keeps running behind other windows (`assume_focus = 0` in `totk.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.
 Play into the open field (load a save, walk around for a minute, fight something if you can), then close the window.
@@ -54,45 +58,10 @@ The line `vk: using gpu N: <name>` says which one ran.
 
 ## Mods
 
-Mods made for emulators go into `mods/` next to `totk.exe`, one folder per mod, unpacked as they come:
-`mods/<name>/romfs/...` (the Atmosphere layout `mods/<name>/atmosphere/contents/0100F2C0115B6000/romfs` works
-too). The game loads them at the next start. The Mods tab of the in-game menu (F1) lists them: switch a mod off, or move
-it up or down. When two mods change the same file, the higher one wins.
-
-- RomFS mods (textures, models, text, gameplay files) work.
-- Mods packaged for TKMM (`.tkcl`, "TKMM only") and mods that change the same files: merge them in TKMM and set an
-  export location to an empty folder inside `mods/` (for example `mods/TKMM`). That folder is then one mod here.
-- Files made for another game version (names with `.Product.<number>.` that this version does not have) are left out;
-  the Mods tab counts them. Look for the mod's release for your game version.
-- The resource size table (`System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs`), which tells the game how
-  much memory each file needs, is rebuilt at every start with mods enabled: the tables the mods ship are merged and
-  the entries of files a mod made larger or added are raised, the files inside a mod's packs (`Pack/**/*.pack.zs`)
-  included. The log line `RomFS: resource size table: ...` says how many, and names the first files inside packs it
-  raised. A mod's table for another game version still counts for that mod's own files. Without this, a file that
-  outgrew its entry crashes the game when it loads, which can be long after the start, when the game first needs it.
-- Mods that patch the game (`exefs/*.ips`, `exefs/*.pchtxt`, or `atmosphere/exefs_patches/<name>/*.ips`) work when
-  the patches are for this game version: the game rebuilds itself with them at the next start (the setup's rebuild
-  window, a few minutes) and switches them with the mod. Writes into the game's code become patches of the built game;
-  writes into its data are stored into the game before it starts, as emulators apply them. Patches for another version
-  are counted and left out. A file the port cannot apply keeps the whole mod off and the Mods tab says why: a code
-  change it cannot express, or a data write into bytes the built game reads as constants (a jump table) or into the
-  dynamic linker's tables. A patch over one of the port's own patches turns that built-in patch off while the mod is on
-  (the Mods tab names it).
-- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) cannot load that code, with
-  one exception below. Such a mod stays off as a whole, its RomFS files included, unless "Use mods without their code"
-  on the Mods tab is on (`mods_without_code = 1` under `[mods]` in `totk.ini`): then its RomFS files, cheats and ExeFS
-  patches load without the code module. Its files may expect that code; switch the mod off if the game misbehaves.
-- The exception: the code module of The Second Quest (MSFix, its `exefs/subsdk9` in the 1.2.1 and the 1.4.3
-  packages) runs as the port's own code. Its hooks are built into the game like ExeFS patches (the rebuild at the next
-  start) and switch with the mod. The Mods tab says `Its code module subsdk9 runs as the port's own code`, and the log
-  has `mods: <name>: its code module subsdk9 runs ...` at the start and `hooks: ... runs for the first time` when the
-  game first reaches each hooked function. Only one `exefs/subsdk9` runs, the top mod's, as on the Switch.
-- Cheats: an Atmosphère cheat file goes into a mod's `cheats` folder (`mods/<name>/cheats/<build id>.txt`, the
-  build id `277178B7DBA1B6D4` for 1.4.3, `9B4E43650501A4D4` for 1.2.1). The Cheats tab of the menu switches them.
-  Cheats that write memory work at the next start; for cheats that change the game's code the game opens the setup's
-  rebuild window at start and comes back after it (a few minutes). The port ships no cheat files. Details: [cheats.md](cheats.md).
-
-The log names every mod at the start (`mods: <name>: ...`) and how many of its files it serves.
+Mods and cheats made for the emulators go into `mods/` next to `totk.exe`, one folder per mod. [mods.md](mods.md) covers
+installing them, their order, code patches, what does not work and what to check when something looks wrong;
+[cheats.md](cheats.md) covers cheat files. The log names every mod at the start (`mods: <name>: ...`); when you
+report a problem with mods, list them with their download links.
 
 ## What to send back
 
