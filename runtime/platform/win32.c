@@ -673,6 +673,79 @@ __attribute__((noinline)) static void crash_from_runtime(const char *what, uint3
     crash_fn(&c);
 }
 
+// The name a DLL records for itself in its export directory ("amdvlk64.dll"). Read from its mapped headers, not through
+// the loader, whose lock another thread may hold when the process crashes.
+static const char *image_name(const char *base) {
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(base + ((const IMAGE_DOS_HEADER *)base)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY *d = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!d->VirtualAddress || !d->Size) return "unnamed module";
+    return base + ((const IMAGE_EXPORT_DIRECTORY *)(base + d->VirtualAddress))->Name;
+}
+
+// The return addresses in [lo, lo + size) on the crashed thread's stack, innermost first: unwinds the faulting context
+// with the x64 unwind tables; a function without a table entry (a leaf, or address 0 after a call through a null
+// pointer) has its return address on top of the stack. The walk stops at return address 0 (the thread's first frame)
+// and when the stack pointer leaves the thread's stack, so a damaged stack ends it instead of faulting.
+static int frames_in(const CONTEXT *at, uintptr_t lo, uintptr_t size, uintptr_t *out, int max) {
+    CONTEXT c = *at;
+    ULONG_PTR low, high;
+    GetCurrentThreadStackLimits(&low, &high);
+    int n = 0;
+    for (int i = 0; i < 256 && n < max && (c.Rip || !i) && c.Rsp >= low && c.Rsp + 8 <= high; i++) {
+        DWORD64 img;
+        RUNTIME_FUNCTION *fe = RtlLookupFunctionEntry(c.Rip, &img, NULL);
+        if (fe) {
+            void *data;
+            DWORD64 frame;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, img, c.Rip, fe, &c, &data, &frame, NULL);
+        } else {
+            c.Rip = *(const DWORD64 *)c.Rsp;
+            c.Rsp += 8;
+        }
+        if (c.Rip - lo < size) out[n++] = (uintptr_t)c.Rip;
+    }
+    return n;
+}
+
+// The last-chance filter: an exception no handler took, in any module. crash_veh reports faults in this executable as
+// they happen; this one catches the rest, which used to end the process with no line in the log: a fault in a GPU
+// driver's own thread or in a driver call (vkQueueSubmit, vkAllocateMemory), a C++ exception a library let escape, a
+// call through a null pointer (rip 0, outside every module). Windows calls it only after every handler declined, so
+// the exceptions drivers raise and catch themselves never get here; it costs nothing until a crash.
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    DWORD code = er->ExceptionCode;
+    uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
+    PlatCrash c = {code == EXCEPTION_ACCESS_VIOLATION        ? "access violation"
+                   : code == EXCEPTION_ILLEGAL_INSTRUCTION   ? "illegal instruction"
+                   : code == EXCEPTION_INT_DIVIDE_BY_ZERO    ? "integer division by zero"
+                   : code == EXCEPTION_PRIV_INSTRUCTION      ? "privileged instruction"
+                   : code == EXCEPTION_STACK_OVERFLOW        ? "stack overflow"
+                   : code == EXCEPTION_IN_PAGE_ERROR         ? "in-page error"
+                   : code == EXCEPTION_BREAKPOINT            ? "breakpoint"
+                   : code == 0xe06d7363u                     ? "C++ exception"
+                   : code == 0xc0000374u                     ? "heap corruption"   // STATUS_HEAP_CORRUPTION
+                                                             : "unhandled exception",
+                   (uint32_t)code, rip, 0, -1, 0};
+    // an in-page error names the data access that failed the same way as an access violation
+    if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) && er->NumberParameters >= 2)
+        c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
+    void *base = NULL;
+    RtlPcToFileHeader((void *)rip, &base);
+    MODULEINFO mi;
+    uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
+    c.offset = rip - (uintptr_t)base;
+    if (!base) c.module = "";
+    else if ((uintptr_t)base != exe) c.module = image_name(base);
+    // After a stack overflow only a few KiB of stack are left, too little for the CONTEXT copy frames_in unwinds
+    if (c.module && code != EXCEPTION_STACK_OVERFLOW &&
+        GetModuleInformation(GetCurrentProcess(), (HMODULE)exe, &mi, sizeof mi))
+        c.nframes = frames_in(ep->ContextRecord, exe, mi.SizeOfImage, c.frames,
+                              (int)(sizeof c.frames / sizeof *c.frames));
+    crash_fn(&c);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static void abort_signal(int sig) { crash_from_runtime("abort", (uint32_t)sig); }
 
 static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wchar_t *file, unsigned line,
@@ -681,97 +754,12 @@ static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wc
     crash_from_runtime("invalid parameter to a C runtime function", 0xc0000417u);   // STATUS_INVALID_CRUNTIME_PARAMETER
 }
 
-static const char *exception_name(DWORD code) {
-    switch (code) {
-    case EXCEPTION_ACCESS_VIOLATION: return "access violation";
-    case EXCEPTION_IN_PAGE_ERROR: return "in-page error";
-    case EXCEPTION_ILLEGAL_INSTRUCTION: return "illegal instruction";
-    case EXCEPTION_PRIV_INSTRUCTION: return "privileged instruction";
-    case EXCEPTION_INT_DIVIDE_BY_ZERO: return "integer division by zero";
-    case EXCEPTION_STACK_OVERFLOW: return "stack overflow";
-    case EXCEPTION_BREAKPOINT: return "breakpoint";
-    case EXCEPTION_DATATYPE_MISALIGNMENT: return "misaligned data";
-    case EXCEPTION_NONCONTINUABLE_EXCEPTION: return "non-continuable exception";
-    case 0xc0000374u: return "heap corruption";        // STATUS_HEAP_CORRUPTION, raised by ntdll's heap checks
-    case 0xc0000420u: return "assertion failure";      // STATUS_ASSERTION_FAILURE
-    case 0xe06d7363u: return "C++ exception";          // what an MSVC-built module's throw raises
-    default: return "exception";
-    }
-}
-
-// Return addresses inside this executable on the faulting thread's stack, innermost first, from a copy of the faulting
-// context unwound with each module's x64 unwind data (RtlVirtualUnwind); a function without unwind data is a leaf
-// whose return address is at rsp. Stops at max addresses, after 64 frames, or at a stack pointer outside the thread's
-// stack (a fiber's when the thread runs one: SwitchToFiber moves the thread's stack limits with it).
-static int exe_frames(const CONTEXT *fault, uintptr_t *out, int max) {
-    MODULEINFO mi;
-    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi)) return 0;
-    ULONG_PTR low = 0, high = 0;
-    GetCurrentThreadStackLimits(&low, &high);
-    uintptr_t base = (uintptr_t)mi.lpBaseOfDll;
-    CONTEXT c = *fault;
-    int n = 0;
-    for (int depth = 0; depth < 64 && n < max && c.Rip; depth++) {
-        if (c.Rsp < low || c.Rsp + 8 > high) break;
-        if (c.Rip - base < mi.SizeOfImage) out[n++] = (uintptr_t)c.Rip;
-        DWORD64 image = 0;
-        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &image, NULL);
-        if (f) {
-            PVOID data;
-            DWORD64 frame;
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, NULL);
-        } else {
-            c.Rip = *(const DWORD64 *)(uintptr_t)c.Rsp;
-            c.Rsp += 8;
-        }
-    }
-    return n;
-}
-
-// Last chance for an exception that no handler took, in any module. crash_veh reports first-chance faults only in this
-// executable's code, because another module may handle its own exceptions (a driver probing memory under SEH); one
-// that nobody took ends the process, and an access violation inside the GPU driver, ntdll's heap corruption check or a
-// C++ exception a driver threw ended it with no report at all: the log stopped mid-game. A crash inside this report
-// (the unwinder reading a broken stack) comes back here and goes to the previous filter, the C runtime's.
-static LPTOP_LEVEL_EXCEPTION_FILTER prev_filter;
-
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
-    static volatile LONG busy;
-    if (!crash_fn || InterlockedExchange(&busy, 1)) return prev_filter ? prev_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
-    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-    DWORD code = er->ExceptionCode;
-    uintptr_t rip = (uintptr_t)er->ExceptionAddress, base = 0;
-    // The module's name, in static buffers rather than plat_module_of's stack ones: after a stack overflow only a few
-    // KiB of stack are left. One report at a time (busy), so they are not shared.
-    static wchar_t wpath[MAX_PATH];
-    static char module[MAX_PATH * 3];
-    HMODULE m = NULL;
-    module[0] = 0;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)rip, &m) && m) {
-        base = (uintptr_t)m;
-        if (GetModuleFileNameW(m, wpath, MAX_PATH)) {
-            const wchar_t *n = wcsrchr(wpath, L'\\') ? wcsrchr(wpath, L'\\') + 1 : wpath;
-            if (!WideCharToMultiByte(CP_UTF8, 0, n, -1, module, sizeof module, NULL, NULL)) module[0] = 0;
-        }
-        if (!module[0]) strcpy(module, "?");
-    }
-    PlatCrash c = {exception_name(code), (uint32_t)code, rip, base ? rip - base : rip, -1, 0};
-    if (base != (uintptr_t)GetModuleHandleW(NULL)) c.module = module;
-    if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) && er->NumberParameters >= 2)
-        c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
-    // A stack overflow leaves too little stack for the CONTEXT copy the unwinding takes
-    if (code != EXCEPTION_STACK_OVERFLOW) c.nframes = exe_frames(ep->ContextRecord, c.frames, 16);
-    crash_fn(&c);   // ends the process
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     AddVectoredExceptionHandler(0, crash_veh);
+    SetUnhandledExceptionFilter(crash_filter);   // replaces the C runtime's filter; crash_fn never returns
     signal(SIGABRT, abort_signal);
     _set_invalid_parameter_handler(invalid_parameter);
-    prev_filter = SetUnhandledExceptionFilter(crash_filter);
 }
 
 // A fresh process gets a fresh layout: Windows places DLLs, heaps and thread stacks at random addresses. The parent
@@ -1658,6 +1646,56 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     if (!ReadFile(c->out, buf, (DWORD)cap, &got, NULL)) return -1;
     return (long)got;
 }
+
+// ---- local IPC (platform.h): Discord's Rich Presence named pipe
+struct PlatIpc { HANDLE h; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    wchar_t wname[128], path[152];
+    if (!widen(name, wname, 128)) return NULL;
+    swprintf(path, 152, L"\\\\.\\pipe\\%ls", wname);
+    HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;   // no listener, or the pipe is busy: the caller retries later
+    PlatIpc *p = malloc(sizeof *p);
+    if (!p) {
+        CloseHandle(h);
+        return NULL;
+    }
+    p->h = h;
+    return p;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    uint64_t deadline = plat_now_ms() + ms;
+    for (;;) {
+        DWORD have = 0;
+        if (!PeekNamedPipe(p->h, NULL, 0, NULL, &have, NULL)) return -1;   // the writer closed the pipe
+        if (have) {
+            DWORD got = 0;
+            if (!ReadFile(p->h, buf, have < n ? have : (DWORD)n, &got, NULL) || !got) return -1;
+            return (int)got;
+        }
+        if (plat_now_ms() >= deadline) return 0;
+        plat_sleep_ms(5);
+    }
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        DWORD put = 0;
+        if (!WriteFile(p->h, at, n > (1u << 30) ? 1u << 30 : (DWORD)n, &put, NULL) || !put) return 0;
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    CloseHandle(p->h);
+    free(p);
+}
+
 
 // ---- restart
 // TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only

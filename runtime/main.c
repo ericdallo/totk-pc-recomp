@@ -7,6 +7,7 @@
 //     --probe-plugins   the hook handlers for mods' code modules (plugins.c); needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
+//     --probe-discord  the Rich Presence IPC exchange; skips without a Discord client; no game files
 //     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
@@ -156,8 +157,8 @@ static RtConfig cfg;
 const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
-volatile int g_fnprof = 0;
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr, (void)lr, (void)x0; }
+volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
+void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
 
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
@@ -238,22 +239,20 @@ static void crash_handler(const PlatCrash *x) {
         plat_exit_hard(71);
     }
     char d[160];
-    uintptr_t rip = x->rip, exe = plat_exe_base();
-    if (!x->module)
-        rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip,
-                (unsigned long long)x->offset);
-    else if (*x->module)   // another module's code: a driver, the C runtime, ntdll
-        rt_logf("FATAL: %s (%#x) at host %p (%s+%#llx)", x->what, x->code, (void *)rip, x->module,
-                (unsigned long long)x->offset);
-    else
-        rt_logf("FATAL: %s (%#x) at host %p (outside every module)", x->what, x->code, (void *)rip);
+    uintptr_t rip = x->rip;
+    rt_logf("FATAL: %s (%#x) at host %p (", x->what, x->code, (void *)rip);
+    if (x->module && !*x->module) rt_logf("outside every module)");
+    else rt_logf("%s+%#llx)", x->module ? x->module : "totk", (unsigned long long)x->offset);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
     uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    for (int i = 0; i < x->nframes; i++) {   // where this executable called abort, the C runtime or the crashed module
+    // abort and invalid parameter: where the host code called it; a fault in another module: the host calls that led
+    // into it
+    uintptr_t exe = plat_exe_base();
+    for (int i = 0; i < x->nframes; i++) {
         uint64_t g = lifted_function(x->frames[i]);
         rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
@@ -480,12 +479,28 @@ static int selftest(void) {
     return failures ? 1 : 0;
 }
 
+// --probe-crash-call and --probe-crash-null crash on purpose, to check the report of a fault outside this executable.
+// call: strlen in the C runtime library (ucrtbase.dll, libc.so.6) reads address 8, the way a driver faults inside a
+// call the host made; the report names the library and the host frames that called it. null: a call through a null
+// function pointer, which leaves rip at 0, outside every module. Both end with exit code 71 and a FATAL line in the
+// log.
+static size_t (*volatile probe_strlen)(const char *) = strlen;
+static void (*volatile probe_null)(void);
+
+static int probe_crash(int null) {
+    if (null) probe_null();
+    else printf("%zu\n", probe_strlen((const char *)(uintptr_t)8));
+    printf("probe-crash: still running, the crash did not happen\n");
+    return 1;
+}
+
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-plugins | --probe-kernel | --probe-ipc | "
                     "--probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
-                    "--probe-vkexec | --probe-astc | --probe-movie | --prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
+                    "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -568,17 +583,21 @@ int main(int argc, char **argv) {
     log_open(!mode);
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
+        discord_init();   // the Rich Presence thread (discord_rpc.c); it reads totk.ini itself and idles while off
         rt_boot();
         return 0;
     }
     if (!strcmp(mode, "--selftest")) return selftest();
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
+    if (!strcmp(mode, "--probe-crash-call")) return probe_crash(0);
+    if (!strcmp(mode, "--probe-crash-null")) return probe_crash(1);
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
 #ifdef _WIN32
     if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
 #endif
     if (!strcmp(mode, "--probe-mods")) return probe_mods();
     if (!strcmp(mode, "--probe-plugins")) return probe_plugins();
+    if (!strcmp(mode, "--probe-discord")) return probe_discord();
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();
     if (!strcmp(mode, "--probe-services")) return probe_services();
