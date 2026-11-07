@@ -60,6 +60,9 @@ typedef struct {
 } ModInfo;
 
 void mods_scan(void);              // once; later calls return at once
+// Every switched-on mod folder's RomFS root, without the rest of the scan (no ExeFS checks, no order): for mem_init,
+// which runs before the paths mods_scan needs are set (resolution.c mod_tex_heap_kib). cb gets the name and root.
+void mods_peek_romfs(void (*cb)(const char *name, const char *romfs, void *ctx), void *ctx);
 const char *mods_dir(void);        // the folder scanned (default: <dir of totk.exe>/mods)
 int mods_count(void);
 ModInfo *mods_at(int i);           // 0 = top of the order; NULL out of range
@@ -71,6 +74,11 @@ int mods_changed(void);            // 1 when the order or a switch differs from 
 // After ldr_load and rt_patches_init, before any game code: the patch sets of the enabled mods' ExeFS patches on, the
 // port's own sets they replace off, and their data writes stored into main (mods_exefs_data).
 void mods_exefs_switch(void);
+// What mods_exefs_switch does with main's image at base (size bytes, code below code_end; size 0: no data stored), for
+// every enabled mod from the bottom one up, so that the top mod's data writes win where two mods write the same bytes.
+// store as for mods_exefs_data.
+void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
+                      int (*store)(uint64_t addr, const uint8_t *bytes, int n));
 // Stores the data writes of mod m's ExeFS patch files (build-cache/exefs.data) into main's image at base: size bytes,
 // code below code_end. A DT_RELR word gets base added, as the dynamic linker adds it. Every line is checked before the
 // first store: one that falls outside [code_end, size) or does not belong to a usable file of m keeps them all out.

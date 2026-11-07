@@ -901,9 +901,9 @@ class Lift(Step):
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
         # The code cheats of the mods' cheat files, the mods' ExeFS patch files and the hooks of the plugins the port
-        # runs as its own code become patch sets (tools/cheats.py, tools/exefs_patches.py); their status files tell the
-        # runtime what the build has. All are the player's downloads, so files the tools refuse cost those cheats or
-        # patches, not the install: the game is built without them and the setup warns.
+        # runs as its own code become patch sets and data writes (tools/cheats.py, tools/exefs_patches.py); their
+        # status files tell the runtime what the build has. All are the player's downloads, so files the tools refuse
+        # cost those cheats or patches, not the install: the game is built without them and the setup warns.
         plain = layout.patches(game_version(ctx))
         # (tool, patch file it writes, its outputs for the runtime: the status first, then the data file, the files it
         # reads, the warning when it fails)

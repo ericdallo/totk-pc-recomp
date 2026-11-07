@@ -64,38 +64,45 @@ static void probe_data_and_code(const char *root) {
     remove_tree(root);
     plat_file_mkdir_p(root);
     const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
-    char n_ips[160], p_ips[160], q_ips[160];
+    char n_ips[160], p_ips[160], q_ips[160], x_ips[160], y_ips[160];
     snprintf(n_ips, sizeof n_ips, "N/exefs/%s.ips", bid);
     snprintf(p_ips, sizeof p_ips, "P/exefs/%s.ips", bid);
     snprintf(q_ips, sizeof q_ips, "Q/exefs/%s.ips", bid);
+    snprintf(x_ips, sizeof x_ips, "X/exefs/%s.ips", bid);
+    snprintf(y_ips, sizeof y_ips, "Y/exefs/%s.ips", bid);
     const char *files[] = {"E/exefs/subsdk9", "H/romfs/h.bin", "H/exefs/subsdk9", "I/romfs/i.bin", "I/exefs/main",
-                           n_ips, p_ips, q_ips};
+                           n_ips, p_ips, q_ips, x_ips, y_ips};
     for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
     uint32_t kn = fnv(n_ips, strlen(n_ips)), kp = fnv(p_ips, strlen(p_ips)), kq = fnv(q_ips, strlen(q_ips));
+    uint32_t kx = fnv(x_ips, strlen(x_ips)), ky = fnv(y_ips, strlen(y_ips));
     uint32_t c = fnv("probe", 5);
-    char status[256], data[512];
+    char status[512], data[768];
     snprintf(status, sizeof status,
-             "%08X\t%08X\tdata\t-\tdata 11\n%08X\t%08X\tdata\t-\tdata 1\n%08X\t%08X\tdata\t-\tdata 4\n", kn, c, kp, c,
-             kq, c);
+             "%08X\t%08X\tdata\t-\tdata 11\n%08X\t%08X\tdata\t-\tdata 1\n%08X\t%08X\tdata\t-\tdata 4\n"
+             "%08X\t%08X\tdata\t-\tdata 1\n%08X\t%08X\tdata\t-\tdata 1\n",
+             kn, c, kp, c, kq, c, kx, c, ky, c);
     snprintf(data, sizeof data,
              "# file hash, content hash, offset in main, bytes[, base]\n"
              "%08X\t%08X\t10\t414243\n"                   // N: three bytes of data
              "%08X\t%08X\t18\t0800000000000000\tbase\r\n"  // N: a DT_RELR word, 8 plus main's base (a CRLF line)
              "DEADBEEF\t%08X\t20\t99\n"                   // another file's: not N's
              "%08X\t%08X\t4\t77\n"                         // P: below main's data
-             "%08X\t%08X\t30\t66\n",                       // Q: 1 of the 4 bytes its status counts
-             kn, c, kn, c, c, kp, c, kq, c);
+             "%08X\t%08X\t30\t66\n"                        // Q: 1 of the 4 bytes its status counts
+             "%08X\t%08X\t28\tBB\n"                        // X: the byte Y writes too
+             "%08X\t%08X\t28\tAA\n",                       // Y, above X in the order: its byte stays
+             kn, c, kn, c, c, kp, c, kq, c, kx, c, ky, c);
     mods_probe_cache(status, data);
     cfg_set("TOTK_MODS_DIR", root);
-    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_ORDER", "Y");   // Y on top, the rest by name: Y E H I N P Q X
     cfg_set("TOTK_MODS_DISABLED", "");
     cfg_set("TOTK_MODS_WITHOUT_CODE", "1");
     mods_rescan();
     mods_scan();
     ModInfo *e = by_name("E"), *h = by_name("H"), *im = by_name("I"), *n = by_name("N"), *p = by_name("P"),
             *q = by_name("Q");
-    CHECK(e && h && im && n && p && q, "second scan: six mods");
-    if (e && h && im && n && p && q) {
+    int all = e && h && im && n && p && q && by_name("X") && by_name("Y");
+    CHECK(all, "second scan: eight mods");
+    if (all) {
         CHECK(e->problem == MOD_PLUGIN, "mods_without_code: a mod with only a code module stays off");
         CHECK(h->problem == MOD_OK && EQ(h->code, "subsdk9"), "mods_without_code: RomFS + subsdk9 is used without it");
         CHECK(im->problem == MOD_OK && EQ(im->code, "main"), "mods_without_code: RomFS + replaced main is used");
@@ -116,6 +123,13 @@ static void probe_data_and_code(const char *root) {
               "a data file holding fewer bytes than the status counts keeps all out");
         for (size_t i = 0; i < sizeof img; i++) untouched &= img[i] == 0x5A;
         CHECK(untouched, "nothing stored when a line does not fit or bytes are missing");
+        // every enabled mod as at start: X and Y write the same byte, and Y, the higher one, wins as its RomFS files
+        // would; P and Q stay out as above, and H and I (code modules that do not load) have nothing to store
+        memset(img, 0, sizeof img);
+        CHECK(EQ(mods_at(0)->name, "Y") && EQ(mods_at(7)->name, "X"), "mods_order puts Y on top and X at the bottom");
+        mods_exefs_apply(base, sizeof img, 8, store_buffer);
+        CHECK(img[0x28] == 0xAA, "two mods write the same byte: the top mod's byte stays");
+        CHECK(!memcmp(img + 0x10, "ABC", 3) && !img[0x30], "the other mods' data as each one stores it alone");
     }
     cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
     mods_rescan();
