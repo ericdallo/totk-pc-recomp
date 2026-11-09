@@ -22,8 +22,8 @@
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
 // rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (platform.h plat_crash_hook: names
-// the faulting module, the lifted function, the guest registers and the guest frame-pointer chain, the GPU's
-// breadcrumbs and the commit charge).
+// the faulting module, the driver and host frames, a C++ exception's type, the lifted function, the guest registers
+// and the guest frame-pointer chain, the GPU's breadcrumbs and the commit charge).
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -248,29 +248,39 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
+    if (x->cxx_type)
+        rt_logf("  C++ type %s%s%s\n", x->cxx_type, x->cxx_what ? ", what(): " : "", x->cxx_what ? x->cxx_what : "");
     uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    // abort and invalid parameter: where the host code called it; a fault in another module: the host calls that led
-    // into it
+    // abort and invalid parameter: where the host code called it; a fault in another module: the driver code and the
+    // host calls that led into it
     uintptr_t exe = plat_exe_base();
     for (int i = 0; i < x->nframes; i++) {
+        const char *m = x->frame_module[i];
+        if (m) {
+            rt_logf("  host frame %2d: %s+%#llx\n", i, *m ? m : "outside every module",
+                    (unsigned long long)x->frame_offset[i]);
+            continue;
+        }
         uint64_t g = lifted_function(x->frames[i]);
         rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
+    if (x->frames_left_out) rt_logf("  (%d frames in other modules left out)\n", x->frames_left_out);
     const char *tn = plat_thread_name();
     rt_logf("  thread: %s\n", tn ? tn : "unnamed (the process's main thread or a library's)");
     Cpu *c = kern_cpu();
     if (c) {
         // The lifted code keeps registers in C locals between calls, so these are their values at the last call,
-        // indirect branch or host call. pc is where the last indirect branch went (rt_dispatch): after a call through
-        // a PLT stub, the import that ran, which ldr_describe names by its symbol.
+        // indirect branch or host call; pc is where the last indirect branch went (rt_dispatch).
         for (int i = 0; i < 31; i++)
             rt_logf("  x%-2d %016llx%s", i, (unsigned long long)c->x[i], i % 4 == 3 ? "\n" : "");
-        char p[160];
-        rt_logf("  sp  %016llx\n  pc  %s  lr %s\n", (unsigned long long)c->sp, ldr_describe(c->pc, p, sizeof p),
-                ldr_describe(c->x[30], d, sizeof d));
+        // pc named where it points (nameable): the guest code running, the import a PLT stub reached, or the host
+        // function a guest call entered, whose name tells the host call apart
+        rt_logf("  sp  %016llx\n  pc  %016llx", (unsigned long long)c->sp, (unsigned long long)c->pc);
+        if (nameable(c->pc)) rt_logf(" (%s)", ldr_describe(c->pc, d, sizeof d));
+        rt_logf("  lr %s\n", ldr_describe(c->x[30], d, sizeof d));
         for (int i = 0; i < 30; i++)   // code and data addresses among them: callbacks, GOT slots, module data
             if (nameable(c->x[i])) rt_logf("  x%-2d = %s\n", i, ldr_describe(c->x[i], d, sizeof d));
         uint64_t fp = c->x[29];
